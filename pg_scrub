@@ -41,7 +41,7 @@ def execCmd(cmdline):
     return stdout.decode("utf-8")
 
 
-class PGDeepScrub(object):
+class PGScrub(object):
     def __init__(self,):
         self.state = {
             'current_pg': 0
@@ -286,20 +286,20 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    pgds = PGDeepScrub()
-    pgds.read_config(args.configfile)
-    pgds.check_pid()
-    pgds.write_pid()
+    pgs = PGScrub()
+    pgs.read_config(args.configfile)
+    pgs.check_pid()
+    pgs.write_pid()
 
     def sigint_handler(signal, frame):
-        pgds.sigint()
+        pgs.sigint()
         sys.exit(0)
 
     def sighup_handler(signal, frame):
-        pgds.read_config(ods.agentfile)
+        pgs.read_config(ods.agentfile)
 
     signal.signal(signal.SIGINT, sigint_handler)
     signal.signal(signal.SIGHUP, sighup_handler)
 
     # main run
-    pgds.run(args.run_deep_scrub)
+    pgs.run(args.run_deep_scrub)

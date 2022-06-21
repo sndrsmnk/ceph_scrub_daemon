@@ -6,3 +6,7 @@ This **far from done** "Ceph Scrub Daemon" fires off scrubs on PGs and prioritiz
 It tries to limit the number of simultaneous scrubs, but this logic may well be flawed.
 
 Runs shallow scrubs by default. Use the `-D` or `--deep-scrub` argument to make it run deep scrubs.
+
+All the magic is in the `run` function of the `PGScrub` class. All the rest is scaffolding. :-)
+
+There may be dragons.
