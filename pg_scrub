@@ -1,0 +1,305 @@
+#! /usr/bin/env python3
+import sys, os, re, platform, json, argparse, configparser
+import subprocess, threading, signal, syslog, pickle
+from time import tzset, strftime, localtime, sleep, time
+
+
+CFG_SECTION = "pg_scrub"
+DAEMON_NAME = "pg_scrub"
+LOG_LEVEL   = syslog.LOG_INFO
+PATH_CONF   = "/etc/pg_scrub"
+PATH_PID    = "/run/shm"
+FILE_CFG    = "%s/%s.ini" % (PATH_CONF, DAEMON_NAME)
+FILE_PID    = "%s/%s.pid" % (PATH_PID, DAEMON_NAME)
+
+
+# Custom log levels
+LOG_INFO        = 3
+LOG_WARNING     = 2
+LOG_ERROR       = 1
+
+
+# map custom log levels to syslog levels
+LOG_LEVELS = {
+    LOG_INFO    : syslog.LOG_INFO,
+    LOG_WARNING : syslog.LOG_WARNING,
+    LOG_ERROR   : syslog.LOG_ERR,
+}
+
+
+def log(text, level=LOG_INFO, always=False, do_exit=False):
+    if always == True or level <= LOG_LEVEL:
+        print("[%s] %s" % (strftime("%d-%m-%Y %H:%M:%S", localtime()), text))
+        syslog.syslog(LOG_LEVELS[level], text)
+    if do_exit:
+        sys.exit(1)
+
+
+def execCmd(cmdline):
+    cmd = subprocess.Popen(cmdline, shell=True, stdout=subprocess.PIPE)
+    stdout, _ = cmd.communicate()
+    return stdout.decode("utf-8")
+
+
+class PGDeepScrub(object):
+    def __init__(self,):
+        self.state = {
+            'current_pg': 0
+        }
+        self.config = {
+            'configfile': FILE_CFG,
+            'pid': 0
+        }
+        msg = "%s starting up with PID %s" % (DAEMON_NAME, os.getpid())
+        log(msg, LOG_INFO, always=True)
+
+    def read_config(self, fname=None):
+        if fname == None:
+            fname = self.config.get("configfile", "")
+
+        if fname == "":
+            log("Don't know which configfile to read.", LOG_ERROR, do_exit=True)
+
+        log("Reading config file '%s'" % fname, LOG_INFO)
+
+        try:
+            cfg_parser = configparser.ConfigParser()
+            cfg_parser.read(fname)
+
+            if not cfg_parser.has_section(CFG_SECTION):
+                log("No section '%s' found in config file '%s', quitting!" % (CFG_SECTION, fname))
+
+            # Slurp in INI-content
+            for option in cfg_parser.options(CFG_SECTION):
+                self.config[option] =  cfg_parser.get(CFG_SECTION, option)
+
+            # Config tests
+            if not self.config["scrub_max_concurrent"]:
+                log("No 'scrub_max_concurrent' defined in config!", LOG_ERROR, do_exit=True)
+            else:
+                val = self.config["scrub_max_concurrent"]
+                if not val.strip().isdigit():
+                    log("Value '%s' in 'scrub_max_concurrent' is not a digit." % val, LOG_ERROR, do_exit=True)
+                self.config["scrub_max_concurrent"] = int(val)
+
+            if not self.config["scrub_allowed_hours"]:
+                log("No 'scrub_allowed_hours' defined in config!", LOG_ERROR, do_exit=True)
+            else:
+                val_a = []
+                for val in self.config['scrub_allowed_hours'].split(","):
+                    val_a.append(val.strip())
+                val_a.sort()
+                for val in val_a:
+                    if not val.strip().isdigit():
+                        log("Value '%s' in 'scrub_allowed_hours' is not a digit." % val, LOG_ERROR, do_exit=True)
+                self.config["scrub_allowed_hours"] = val_a
+
+            if not self.config["scrub_allowed_days"]:
+                log("No 'scrub_allowed_days' defined in config!", LOG_ERROR, do_exit=True)
+            else:
+                val_a = []
+                for val in self.config['scrub_allowed_days'].split(","):
+                    val_a.append(val.strip())
+                val_a.sort()
+                for val in val_a:
+                    if not val.strip().isdigit():
+                        log("Value '%s' in 'scrub_allowed_days' is not a digit." % val, LOG_ERROR, do_exit=True)
+                self.config["scrub_allowed_days"] = val_a
+
+            if self.config.get("loglevel", "") != "":
+                global LOG_LEVEL
+                if self.config["loglevel"].upper() == "INFO":
+                    LOG_LEVEL = LOG_INFO
+                elif self.config["loglevel"].upper() == "WARNING":
+                    LOG_LEVEL = LOG_WARNING
+                elif self.config["loglevel"].upper() == "ERROR":
+                    LOG_LEVEL = LOG_ERROR
+                else:
+                    log("Unknown loglevel '%s', ignoring it." % self.config["loglevel"], LOG_WARNING)
+
+            if len(self.config.get("pidfile", "")) == 0:
+                self.config["pidfile"] = FILE_PID
+
+        except Exception as e:
+            log("Unable to load configuration from %s, error: %s" % (fname, e), LOG_ERROR, do_exit=True)
+
+    def write_pid(self):
+        try:
+            fh = open(self.config["pidfile"], "w")
+            fh.write("%d\n" % os.getpid())
+            fh.close()
+            self.pid = os.getpid()
+            log("Wrote PID %d to '%s'" % (os.getpid(), self.config["pidfile"]), LOG_INFO)
+
+        except:
+            log("Failed to write current PID to '%s'" % self.config["pidfile"], LOG_ERROR, do_exit=True)
+
+    def remove_pid(self):
+        try:
+            os.remove(self.config["pidfile"])
+            log("Removed old PID file '%s' for PID %s" % (self.config["pidfile"], self.pid), LOG_INFO)
+
+        except Exception as e:
+            log("Failed to remove old PID file '%s': %s" % (self.config["pidfile"], e), LOG_ERROR, do_exit=True)
+
+    def check_pid(self):
+        try:
+            fh = open(self.config["pidfile"], "r")
+        except:
+            log("No pid file found.", LOG_INFO)
+            return
+
+        trypid = fh.readline().strip()
+        self.pid = trypid
+        fh.close()
+        log("Found pid file referring to PID %s." % trypid, LOG_INFO)
+        shouldweexit = 0
+        try:
+            os.kill(int(trypid), 0)
+            log("%s is already running as process '%s'" % (DAEMON_NAME, trypid), LOG_ERROR)
+            shouldweexit = 1
+        except OSError:
+            shouldweexit = 0
+
+        if shouldweexit:
+            sys.exit(1)
+
+        log("Process %s was not found running. Stale pid file removed." % trypid, LOG_INFO)
+        self.remove_pid()
+
+    def sigint(self):
+        self.remove_pid()
+        if logfile:
+            logfile.close()
+        log("SIGINT received, exiting.", LOG_ERROR)
+        sys.exit(0)
+
+    def write_pickle(self):
+        try:
+            output = open(self.config['statefile'], 'wb')
+        except OSError as e:
+            log("Can't write state file '%s': %s", (self.config['statefile'], e), LOG_ERROR)
+            sys.exit(1)
+
+        # Pickle the list using the highest protocol available.
+        pickle.dump(self.state, output, -1)
+        output.close()
+    
+    def read_pickle(self):
+        try:
+            input = open(self.config['statefile'], 'r')
+        except IOError:
+            return {}
+
+        self.state = pickle.load(input)
+        input.close()
+
+    def run(self, run_deep_scrub=False):
+        while True:
+            log("pg_scrub main loop start!", LOG_INFO)
+            starttime = time()
+
+            pg_map = {}
+            pg_stats = json.loads(execCmd("/usr/bin/ceph pg ls -f json 2>/dev/null"))
+            look_for_key = 'last_deep_scrub_stamp' if run_deep_scrub else 'last_scrub_stamp'
+            for pg_stat in pg_stats['pg_stats']:
+                pg_map[pg_stat['pgid']] = pg_stat[look_for_key]
+
+            num_pgs = len(pg_map)
+            if not num_pgs:
+                log("No PGs were found on the OSDs, or no OSDs at all. Can't decide scrub pattern.", LOG_ERROR)
+                sleep(30)
+                continue
+
+            num_days = int(self.config['num_days'])
+            num_hours = len(self.config['scrub_allowed_hours'])
+            num_pgs_per_day = int( int(num_pgs / self.config['scrub_max_concurrent']) / num_days)
+            max_mainloop_cycle = num_days * num_hours * 3600
+            scrub_sleep = max_mainloop_cycle / int(num_pgs / self.config['scrub_max_concurrent'])
+            log("Found %s PGs to scrub in %s days within %s hours each day." % (num_pgs, num_days, num_hours), LOG_INFO)
+            log("That's %s PGs per day, so the delay between scrubs can be %s seconds." % (num_pgs_per_day, scrub_sleep), LOG_INFO)
+            log("The process will restart every %s seconds." % max_mainloop_cycle, LOG_INFO)
+    
+            for pg in sorted(pg_map, key=pg_map.get):
+                curHour = localtime()[3]
+                curDay = localtime()[6] + 1
+                while ((str(curDay) not in self.config['scrub_allowed_days']) or
+                        (str(curHour) not in self.config['scrub_allowed_hours'])):
+                    curHour = localtime()[3]
+                    log("Not allowed to scrub. Sleeping.", LOG_INFO)
+                    sleep(60)
+
+                continueNext = 0
+                while not continueNext:
+                    cmdOutputTxt = execCmd("/usr/bin/ceph pg ls scrubbing -f json")
+                    cmdOutputObj = json.loads(cmdOutputTxt)
+                    if 'pg_stats' not in cmdOutputObj:
+                        break
+                    pgState = cmdOutputObj['pg_stats']
+
+                    curConcurrent = 0
+                    look_for_text = r'scrubbing\+deep' if run_deep_scrub else r'active\+clean\+scrubbing$'
+                    for pgObj in pgState:
+                        if re.search(look_for_text, pgObj['state']):
+                            curConcurrent = curConcurrent + 1
+
+                    if curConcurrent < self.config['scrub_max_concurrent']:
+                        log("   Found %d scrubbing PGs which is < %d, starting another one." % (curConcurrent, self.config['scrub_max_concurrent']), LOG_ERROR)
+                        continueNext = 1
+                    else:
+                        log("   Found %d scrubbing PGs which is >= %d, sleeping." % (curConcurrent, self.config['scrub_max_concurrent']), LOG_ERROR)
+                        continueNext = 0
+                        sleep(5)
+
+                log("Scrub PG %04s (last scrub: %s)" % (pg, pg_map[pg]), LOG_WARNING)
+                scrub_type = 'deep-scrub' if run_deep_scrub else 'scrub'
+                execCmd("/usr/bin/ceph pg %s %s 2>/dev/null" % (scrub_type, pg))
+                sleep(15) # Grace sleep, so the PG can actually start scrubbing before we check the scrubbing state?
+
+
+
+###############################
+#            main
+###############################
+if __name__ == "__main__":
+    try:
+        # open a syslog connection
+        logfile = syslog.openlog(DAEMON_NAME, logoption=syslog.LOG_PID | syslog.LOG_NOWAIT)
+    except Exception as e:
+        print("ERROR: failed to write to syslog: %s" % e)
+        sys.exit(1)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-c", "--config-file",
+        action="store",
+        dest="configfile",
+        help="daemon config filename",
+        default=FILE_CFG,
+    )
+    parser.add_argument(
+        "-D", "--deep-scrub",
+        action="store_true",
+        dest="run_deep_scrub",
+        help="do deep scrubs instead of shallow scrubs",
+        default=False
+    )
+    args = parser.parse_args()
+
+    pgds = PGDeepScrub()
+    pgds.read_config(args.configfile)
+    pgds.check_pid()
+    pgds.write_pid()
+
+    def sigint_handler(signal, frame):
+        pgds.sigint()
+        sys.exit(0)
+
+    def sighup_handler(signal, frame):
+        pgds.read_config(ods.agentfile)
+
+    signal.signal(signal.SIGINT, sigint_handler)
+    signal.signal(signal.SIGHUP, sighup_handler)
+
+    # main run
+    pgds.run(args.run_deep_scrub)
