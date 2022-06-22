@@ -1,7 +1,7 @@
 #! /usr/bin/env python3
-import sys, os, re, platform, json, argparse, configparser
-import subprocess, threading, signal, syslog, pickle
-from time import tzset, strftime, localtime, sleep, time
+import sys, os, re, json, argparse, configparser
+import subprocess, signal, syslog, pickle
+from time import strftime, localtime, sleep, time
 
 
 CFG_SECTION = "pg_scrub"
@@ -226,8 +226,23 @@ class PGScrub(object):
                 while ((str(curDay) not in self.config['scrub_allowed_days']) or
                         (str(curHour) not in self.config['scrub_allowed_hours'])):
                     curHour = localtime()[3]
+                    curDay = localtime()[6] + 1
                     log("Not allowed to scrub. Sleeping.", LOG_INFO)
                     sleep(60)
+
+                while 1:
+                    ceph_health = json.loads(execCmd("/usr/bin/ceph health detail --format json"))
+                    if not 'POOL_SCRUB_FLAGS' in ceph_health['checks']:
+                        break
+                    summary_msg = ceph_health['checks']['POOL_SCRUB_FLAGS']['summary']['message']
+                    if 'noscrub' in summary_msg and not run_deep_scrub:
+                        log("Running shallow scrubs was disabled with a Ceph flag. Sleeping.", LOG_INFO)
+                        sleep(60)
+                    elif 'nodeep-scrub' in summary_msg and run_deep_scrub:
+                        log("Running deep scrubs was disabled with a Ceph flag. Sleeping.", LOG_INFO)
+                        sleep(60)
+                    else
+                        break
 
                 continueNext = 0
                 while not continueNext:
