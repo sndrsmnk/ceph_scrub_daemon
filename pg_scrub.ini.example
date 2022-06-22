@@ -19,4 +19,9 @@ scrub_allowed_days = 1, 2, 3, 4, 5, 6, 7
 # Separate multiple values with commas
 scrub_allowed_hours = 19,20,21,22
 
+# (Try to) run this many scrubs simultaneously
 scrub_max_concurrent = 5
+
+# PG IDs matching this regular expression will be skipped.
+# Matched against the pg_id, e.g. "6.1f" or "1.1a3"
+#skip_pg_re = ^[56]\.

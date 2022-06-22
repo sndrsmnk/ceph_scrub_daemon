@@ -62,66 +62,72 @@ class PGScrub(object):
 
         log("Reading config file '%s'" % fname, LOG_INFO)
 
+        cfg_parser = configparser.ConfigParser()
         try:
-            cfg_parser = configparser.ConfigParser()
             cfg_parser.read(fname)
-
-            if not cfg_parser.has_section(CFG_SECTION):
-                log("No section '%s' found in config file '%s', quitting!" % (CFG_SECTION, fname))
-
-            # Slurp in INI-content
-            for option in cfg_parser.options(CFG_SECTION):
-                self.config[option] =  cfg_parser.get(CFG_SECTION, option)
-
-            # Config tests
-            if not self.config["scrub_max_concurrent"]:
-                log("No 'scrub_max_concurrent' defined in config!", LOG_ERROR, do_exit=True)
-            else:
-                val = self.config["scrub_max_concurrent"]
-                if not val.strip().isdigit():
-                    log("Value '%s' in 'scrub_max_concurrent' is not a digit." % val, LOG_ERROR, do_exit=True)
-                self.config["scrub_max_concurrent"] = int(val)
-
-            if not self.config["scrub_allowed_hours"]:
-                log("No 'scrub_allowed_hours' defined in config!", LOG_ERROR, do_exit=True)
-            else:
-                val_a = []
-                for val in self.config['scrub_allowed_hours'].split(","):
-                    val_a.append(val.strip())
-                val_a.sort()
-                for val in val_a:
-                    if not val.strip().isdigit():
-                        log("Value '%s' in 'scrub_allowed_hours' is not a digit." % val, LOG_ERROR, do_exit=True)
-                self.config["scrub_allowed_hours"] = val_a
-
-            if not self.config["scrub_allowed_days"]:
-                log("No 'scrub_allowed_days' defined in config!", LOG_ERROR, do_exit=True)
-            else:
-                val_a = []
-                for val in self.config['scrub_allowed_days'].split(","):
-                    val_a.append(val.strip())
-                val_a.sort()
-                for val in val_a:
-                    if not val.strip().isdigit():
-                        log("Value '%s' in 'scrub_allowed_days' is not a digit." % val, LOG_ERROR, do_exit=True)
-                self.config["scrub_allowed_days"] = val_a
-
-            if self.config.get("loglevel", "") != "":
-                global LOG_LEVEL
-                if self.config["loglevel"].upper() == "INFO":
-                    LOG_LEVEL = LOG_INFO
-                elif self.config["loglevel"].upper() == "WARNING":
-                    LOG_LEVEL = LOG_WARNING
-                elif self.config["loglevel"].upper() == "ERROR":
-                    LOG_LEVEL = LOG_ERROR
-                else:
-                    log("Unknown loglevel '%s', ignoring it." % self.config["loglevel"], LOG_WARNING)
-
-            if len(self.config.get("pidfile", "")) == 0:
-                self.config["pidfile"] = FILE_PID
-
         except Exception as e:
             log("Unable to load configuration from %s, error: %s" % (fname, e), LOG_ERROR, do_exit=True)
+
+        if not cfg_parser.has_section(CFG_SECTION):
+            log("No section '%s' found in config file '%s', quitting!" % (CFG_SECTION, fname), LOG_ERROR, do_exit=True)
+
+        # Slurp in INI-content
+        for option in cfg_parser.options(CFG_SECTION):
+            self.config[option] =  cfg_parser.get(CFG_SECTION, option)
+
+        # Config tests
+        if 'skip_pg_re' in self.config:
+            try:
+                self.config['skip_pg_re'] = re.compile(self.config['skip_pg_re'])
+            except re.error as e:
+                log("Regular expression for 'skip_pg_re' in config does not compile: %s" % e, LOG_ERROR, do_exit=True)
+
+        if not self.config["scrub_max_concurrent"]:
+            log("No 'scrub_max_concurrent' defined in config!", LOG_ERROR, do_exit=True)
+        else:
+            val = self.config["scrub_max_concurrent"]
+            if not val.strip().isdigit():
+                log("Value '%s' in 'scrub_max_concurrent' is not a digit." % val, LOG_ERROR, do_exit=True)
+            self.config["scrub_max_concurrent"] = int(val)
+
+        if not self.config["scrub_allowed_hours"]:
+            log("No 'scrub_allowed_hours' defined in config!", LOG_ERROR, do_exit=True)
+        else:
+            val_a = []
+            for val in self.config['scrub_allowed_hours'].split(","):
+                val_a.append(val.strip())
+            val_a.sort()
+            for val in val_a:
+                if not val.strip().isdigit():
+                    log("Value '%s' in 'scrub_allowed_hours' is not a digit." % val, LOG_ERROR, do_exit=True)
+            self.config["scrub_allowed_hours"] = val_a
+
+        if not self.config["scrub_allowed_days"]:
+            log("No 'scrub_allowed_days' defined in config!", LOG_ERROR, do_exit=True)
+        else:
+            val_a = []
+            for val in self.config['scrub_allowed_days'].split(","):
+                val_a.append(val.strip())
+            val_a.sort()
+            for val in val_a:
+                if not val.strip().isdigit():
+                    log("Value '%s' in 'scrub_allowed_days' is not a digit." % val, LOG_ERROR, do_exit=True)
+            self.config["scrub_allowed_days"] = val_a
+
+        if self.config.get("loglevel", "") != "":
+            global LOG_LEVEL
+            if self.config["loglevel"].upper() == "INFO":
+                LOG_LEVEL = LOG_INFO
+            elif self.config["loglevel"].upper() == "WARNING":
+                LOG_LEVEL = LOG_WARNING
+            elif self.config["loglevel"].upper() == "ERROR":
+                LOG_LEVEL = LOG_ERROR
+            else:
+                log("Unknown loglevel '%s', ignoring it." % self.config["loglevel"], LOG_WARNING)
+
+        if len(self.config.get("pidfile", "")) == 0:
+            self.config["pidfile"] = FILE_PID
+
 
     def write_pid(self):
         try:
@@ -153,16 +159,11 @@ class PGScrub(object):
         self.pid = trypid
         fh.close()
         log("Found pid file referring to PID %s." % trypid, LOG_INFO)
-        shouldweexit = 0
         try:
             os.kill(int(trypid), 0)
-            log("%s is already running as process '%s'" % (DAEMON_NAME, trypid), LOG_ERROR)
-            shouldweexit = 1
+            log("%s is already running as process '%s'" % (DAEMON_NAME, trypid), LOG_ERROR, do_exit=True)
         except OSError:
-            shouldweexit = 0
-
-        if shouldweexit:
-            sys.exit(1)
+            pass
 
         log("Process %s was not found running. Stale pid file removed." % trypid, LOG_INFO)
         self.remove_pid()
@@ -180,8 +181,6 @@ class PGScrub(object):
         except OSError as e:
             log("Can't write state file '%s': %s", (self.config['statefile'], e), LOG_ERROR)
             sys.exit(1)
-
-        # Pickle the list using the highest protocol available.
         pickle.dump(self.state, output, -1)
         output.close()
     
@@ -190,7 +189,6 @@ class PGScrub(object):
             input = open(self.config['statefile'], 'r')
         except IOError:
             return {}
-
         self.state = pickle.load(input)
         input.close()
 
@@ -221,6 +219,10 @@ class PGScrub(object):
             log("The process will restart every %s seconds." % max_mainloop_cycle, LOG_INFO)
     
             for pg in sorted(pg_map, key=pg_map.get):
+                if 'skip_pg_re' in self.config and re.search(self.config['skip_pg_re'], pg):
+                    log("Skipping pg '%s' as it matches the 'skip_pg_re' configured." % pg, LOG_INFO)
+                    continue
+
                 curHour = localtime()[3]
                 curDay = localtime()[6] + 1
                 while ((str(curDay) not in self.config['scrub_allowed_days']) or
@@ -259,14 +261,14 @@ class PGScrub(object):
                             curConcurrent = curConcurrent + 1
 
                     if curConcurrent < self.config['scrub_max_concurrent']:
-                        log("   Found %d scrubbing PGs which is < %d, starting another one." % (curConcurrent, self.config['scrub_max_concurrent']), LOG_ERROR)
+                        log("   Found %d scrubbing PGs which is < %d, starting another one." % (curConcurrent, self.config['scrub_max_concurrent']), LOG_INFO)
                         continueNext = 1
                     else:
-                        log("   Found %d scrubbing PGs which is >= %d, sleeping." % (curConcurrent, self.config['scrub_max_concurrent']), LOG_ERROR)
+                        log("   Found %d scrubbing PGs which is >= %d, sleeping." % (curConcurrent, self.config['scrub_max_concurrent']), LOG_WARNING)
                         continueNext = 0
                         sleep(5)
 
-                log("Scrub PG %04s (last scrub: %s)" % (pg, pg_map[pg]), LOG_WARNING)
+                log("Scrub PG %04s (last scrub: %s)" % (pg, pg_map[pg]), LOG_INFO)
                 scrub_type = 'deep-scrub' if run_deep_scrub else 'scrub'
                 execCmd("/usr/bin/ceph pg %s %s 2>/dev/null" % (scrub_type, pg))
                 sleep(15) # Grace sleep, so the PG can actually start scrubbing before we check the scrubbing state?
