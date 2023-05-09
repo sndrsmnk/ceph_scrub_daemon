@@ -243,7 +243,7 @@ class PGScrub(object):
                     elif 'nodeep-scrub' in summary_msg and run_deep_scrub:
                         log("Running deep scrubs was disabled with a Ceph flag. Sleeping.", LOG_INFO)
                         sleep(60)
-                    else
+                    else:
                         break
 
                 continueNext = 0
