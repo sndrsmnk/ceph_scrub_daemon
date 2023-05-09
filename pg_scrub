@@ -1,6 +1,6 @@
 #! /usr/bin/env python3
 import sys, os, re, json, argparse, configparser
-import subprocess, signal, syslog, pickle
+import subprocess, signal, syslog
 from time import strftime, localtime, sleep, time
 
 
@@ -43,9 +43,6 @@ def execCmd(cmdline):
 
 class PGScrub(object):
     def __init__(self,):
-        self.state = {
-            'current_pg': 0
-        }
         self.config = {
             'configfile': FILE_CFG,
             'pid': 0
@@ -174,23 +171,6 @@ class PGScrub(object):
             logfile.close()
         log("SIGINT received, exiting.", LOG_ERROR)
         sys.exit(0)
-
-    def write_pickle(self):
-        try:
-            output = open(self.config['statefile'], 'wb')
-        except OSError as e:
-            log("Can't write state file '%s': %s", (self.config['statefile'], e), LOG_ERROR)
-            sys.exit(1)
-        pickle.dump(self.state, output, -1)
-        output.close()
-    
-    def read_pickle(self):
-        try:
-            input = open(self.config['statefile'], 'r')
-        except IOError:
-            return {}
-        self.state = pickle.load(input)
-        input.close()
 
     def run(self, run_deep_scrub=False):
         while True:
