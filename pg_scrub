@@ -275,6 +275,13 @@ if __name__ == "__main__":
         default=FILE_CFG,
     )
     parser.add_argument(
+        "-p", "--pid-file",
+        action="store",
+        dest="configfile",
+        help="daemon pid filename",
+        default=FILE_PID,
+    )
+    parser.add_argument(
         "-D", "--deep-scrub",
         action="store_true",
         dest="run_deep_scrub",
